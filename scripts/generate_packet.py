@@ -71,19 +71,20 @@ def pick_config(configs: List[str], want: str) -> str:
     raise RuntimeError(f"Config '{want}' not found. Available: {configs}")
 
 
-def load_with_split_fallback(dataset: str, config: str, split: str, revision: str | None):
-    """Load dataset config with split fallback.
+def load_strict_split(dataset: str, config: str, split: str, revision: str | None):
+    """Load dataset config for an exact split.
+
+    Hard-fails if the split isn't available. This is intentional: we want an unambiguous,
+    reproducible packet generation tied to a single split name.
 
     Returns (dataset_split, used_split).
     """
     splits = get_dataset_split_names(dataset, config_name=config, revision=revision)
-    use_split = split
-    if use_split not in splits:
-        if len(splits) == 1:
-            use_split = splits[0]
-        else:
-            raise ValueError(f"Split '{split}' not in {splits} for config '{config}'")
-    return load_dataset(dataset, config, split=use_split, revision=revision), use_split
+    if split not in splits:
+        raise ValueError(
+            f"Split '{split}' not available for config '{config}'. Available splits: {splits}"
+        )
+    return load_dataset(dataset, config, split=split, revision=revision), split
 
 
 def batched(xs: List[Any], n: int):
@@ -95,7 +96,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default="BASF-AI/ChemRxivRetrieval")
     ap.add_argument("--revision", default=None)
-    ap.add_argument("--split", default="test")
+    # Hard-coded by design for reproducibility
+    ap.add_argument("--split", default="test", help="(hard-coded default) dataset split")
     ap.add_argument("--model-id", default="BASF-AI/ChEmbed-prog")
     ap.add_argument("--success-target", type=int, default=25)
     ap.add_argument("--failure-target", type=int, default=25)
@@ -119,11 +121,13 @@ def main() -> None:
     queries_cfg = pick_config(configs, "queries")
     qrels_cfg = pick_config(configs, "qrels")
 
-    corpus_ds, corpus_split = load_with_split_fallback(args.dataset, corpus_cfg, args.split, args.revision)
-    queries_ds, queries_split = load_with_split_fallback(args.dataset, queries_cfg, args.split, args.revision)
-    qrels_ds, qrels_split = load_with_split_fallback(args.dataset, qrels_cfg, args.split, args.revision)
+    # Split is strict by design (no fallback)
+    corpus_ds, corpus_split = load_strict_split(args.dataset, corpus_cfg, args.split, args.revision)
+    queries_ds, queries_split = load_strict_split(args.dataset, queries_cfg, args.split, args.revision)
+    qrels_ds, qrels_split = load_strict_split(args.dataset, qrels_cfg, args.split, args.revision)
 
     print(f"Dataset: {args.dataset} (revision={args.revision})")
+    print(f"Split (strict): {args.split}")
     print(f"Corpus config/split: {corpus_cfg}/{corpus_split} (rows={len(corpus_ds)})")
     print(f"Queries config/split: {queries_cfg}/{queries_split} (rows={len(queries_ds)})")
     print(f"Qrels config/split: {qrels_cfg}/{qrels_split} (rows={len(qrels_ds)})")

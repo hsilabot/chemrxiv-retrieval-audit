@@ -72,6 +72,10 @@ python scripts/generate_packet.py \
   --device mps \
   --seed 42 \
   --output-path outputs/chemrxiv_packet_fullcorpus.jsonl
+
+Notes:
+- Split is treated as **strict** (no fallback). Default is `--split test`.
+- The script forces `trust_remote_code=True` for `BASF-AI/ChEmbed-prog`.
 ```
 
 ### Suggested starting values for ~10GB headroom (M-series)

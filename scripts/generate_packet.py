@@ -74,9 +74,6 @@ def pick_config(configs: List[str], want: str) -> str:
 def load_strict_split(dataset: str, config: str, split: str, revision: str | None):
     """Load dataset config for an exact split.
 
-    Hard-fails if the split isn't available. This is intentional: we want an unambiguous,
-    reproducible packet generation tied to a single split name.
-
     Returns (dataset_split, used_split).
     """
     splits = get_dataset_split_names(dataset, config_name=config, revision=revision)
@@ -85,6 +82,23 @@ def load_strict_split(dataset: str, config: str, split: str, revision: str | Non
             f"Split '{split}' not available for config '{config}'. Available splits: {splits}"
         )
     return load_dataset(dataset, config, split=split, revision=revision), split
+
+
+def split_for_config(requested_split: str, config: str) -> str:
+    """ChemRxivRetrieval has non-uniform split names across configs.
+
+    Required mapping (hard-coded by design):
+    - corpus: train
+    - queries: train
+    - qrels (default): test
+
+    If the dataset ever changes, this mapping should be updated intentionally.
+    """
+    if config in {"corpus", "queries"}:
+        return "train"
+    if config == "qrels":
+        return "test"
+    return requested_split
 
 
 def batched(xs: List[Any], n: int):
@@ -121,13 +135,17 @@ def main() -> None:
     queries_cfg = pick_config(configs, "queries")
     qrels_cfg = pick_config(configs, "qrels")
 
-    # Split is strict by design (no fallback)
-    corpus_ds, corpus_split = load_strict_split(args.dataset, corpus_cfg, args.split, args.revision)
-    queries_ds, queries_split = load_strict_split(args.dataset, queries_cfg, args.split, args.revision)
-    qrels_ds, qrels_split = load_strict_split(args.dataset, qrels_cfg, args.split, args.revision)
+    # Split is strict by design (no fallback), but split name is config-specific.
+    corpus_want = split_for_config(args.split, corpus_cfg)
+    queries_want = split_for_config(args.split, queries_cfg)
+    qrels_want = split_for_config(args.split, qrels_cfg)
+
+    corpus_ds, corpus_split = load_strict_split(args.dataset, corpus_cfg, corpus_want, args.revision)
+    queries_ds, queries_split = load_strict_split(args.dataset, queries_cfg, queries_want, args.revision)
+    qrels_ds, qrels_split = load_strict_split(args.dataset, qrels_cfg, qrels_want, args.revision)
 
     print(f"Dataset: {args.dataset} (revision={args.revision})")
-    print(f"Split (strict): {args.split}")
+    print(f"Requested split: {args.split}")
     print(f"Corpus config/split: {corpus_cfg}/{corpus_split} (rows={len(corpus_ds)})")
     print(f"Queries config/split: {queries_cfg}/{queries_split} (rows={len(queries_ds)})")
     print(f"Qrels config/split: {qrels_cfg}/{qrels_split} (rows={len(qrels_ds)})")

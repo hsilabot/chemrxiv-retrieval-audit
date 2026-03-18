@@ -74,7 +74,10 @@ python scripts/generate_packet.py \
   --output-path outputs/chemrxiv_packet_fullcorpus.jsonl
 
 Notes:
-- Split is treated as **strict** (no fallback). Default is `--split test`.
+- Split is treated as **strict** (no fallback), but **config-specific** for this dataset:
+  - `corpus` uses `train`
+  - `queries` uses `train`
+  - `qrels/default` uses `test`
 - The script forces `trust_remote_code=True` for `BASF-AI/ChEmbed-prog`.
 ```
 

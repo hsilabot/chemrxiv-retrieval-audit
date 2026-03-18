@@ -19,6 +19,11 @@ REQUIRED_FIELDS = {
     "success",
 }
 
+# Enforce the exact structure requested (no titles anywhere)
+FORBIDDEN_TOP_LEVEL_FIELDS = {"ground_truth_title"}
+FORBIDDEN_RETRIEVED_FIELDS = {"title"}
+REQUIRED_RETRIEVED_FIELDS = {"rank", "score", "doc_id", "text"}
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -54,8 +59,22 @@ def main() -> None:
             if missing:
                 raise SystemExit(f"ERROR line {ln}: missing fields {sorted(missing)}")
 
+            forbidden = FORBIDDEN_TOP_LEVEL_FIELDS & set(obj.keys())
+            if forbidden:
+                raise SystemExit(f"ERROR line {ln}: forbidden top-level fields present {sorted(forbidden)}")
+
             if not isinstance(obj["retrieved"], list):
                 raise SystemExit(f"ERROR line {ln}: 'retrieved' must be a list")
+
+            for j, r in enumerate(obj["retrieved"], start=1):
+                if not isinstance(r, dict):
+                    raise SystemExit(f"ERROR line {ln}: retrieved[{j}] must be an object")
+                missing_r = REQUIRED_RETRIEVED_FIELDS - set(r.keys())
+                if missing_r:
+                    raise SystemExit(f"ERROR line {ln}: retrieved[{j}] missing fields {sorted(missing_r)}")
+                forbidden_r = FORBIDDEN_RETRIEVED_FIELDS & set(r.keys())
+                if forbidden_r:
+                    raise SystemExit(f"ERROR line {ln}: retrieved[{j}] forbidden fields present {sorted(forbidden_r)}")
 
             if len(obj["retrieved"]) != args.expected_top_k:
                 raise SystemExit(

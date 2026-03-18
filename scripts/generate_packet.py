@@ -26,7 +26,6 @@ class RetrievedDoc:
     rank: int
     score: float
     doc_id: str
-    title: str | None
     text: str
 
 
@@ -36,7 +35,6 @@ class Example:
     query_text: str
     ground_truth_doc_id: str
     ground_truth_score: int
-    ground_truth_title: str | None
     ground_truth_text: str
     top_k: int
     retrieved: List[RetrievedDoc]
@@ -245,7 +243,6 @@ def main() -> None:
                         rank=rank,
                         score=float(score),
                         doc_id=corpus_ids[doc_idx],
-                        title=corpus_titles[doc_idx],
                         text=clipped(corpus_bodies[doc_idx]),
                     )
                 )
@@ -257,7 +254,6 @@ def main() -> None:
                 query_text=qtext,
                 ground_truth_doc_id=gt_doc_id,
                 ground_truth_score=gt_score,
-                ground_truth_title=corpus_titles[gt_idx],
                 ground_truth_text=clipped(corpus_bodies[gt_idx]),
                 top_k=args.top_k,
                 retrieved=retrieved,
@@ -281,20 +277,21 @@ def main() -> None:
             "model": args.model_id,
             "seed": args.seed,
             "top_k": args.top_k,
-            "success_target": args.success_target,
-            "failure_target": args.failure_target,
-            "success_examples": len(success_examples),
-            "failure_examples": len(failure_examples),
+            # Match prior packet style
+            "n_success": len(success_examples),
+            "n_fail": len(failure_examples),
             "scanned_queries": scanned_queries,
             "corpus_size": len(corpus_ids),
-            "query_batch_size": args.query_batch_size,
-            "corpus_chunk_size": args.corpus_chunk_size,
-            "max_seq_length": args.max_seq_length,
-            "device": args.device,
             "notes": {
-                "scope": "full corpus searched for every scanned query (no subsetting)",
+                "corpus_text": "title + ' ' + text (if title present) else text",
+                "query_text": "queries['text'] as-is",
                 "similarity": "dot product on L2-normalized embeddings (cosine)",
+                "scope": "full corpus searched for every scanned query (no subsetting)",
                 "memory_strategy": "chunked corpus encoding + running top-k merge",
+                "query_batch_size": args.query_batch_size,
+                "corpus_chunk_size": args.corpus_chunk_size,
+                "max_seq_length": args.max_seq_length,
+                "device": args.device,
             },
         }
         f.write(json.dumps({"__meta__": meta}, ensure_ascii=False) + "\n")

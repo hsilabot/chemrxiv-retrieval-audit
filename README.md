@@ -103,7 +103,11 @@ python scripts/check_packet.py \
 The JSONL format mirrors prior packet style:
 - line 1 = `{"__meta__": ...}`
 - remaining lines = examples with fields:
-  `query_id, query_text, ground_truth_doc_id, ground_truth_text, top_k, retrieved, success`
+  `query_id, query_text, ground_truth_doc_id, ground_truth_score, ground_truth_text, top_k, retrieved, success`
+
+Keys intentionally omitted (to match desired structure):
+- `ground_truth_title`
+- `retrieved[*].title`
 
 ---
 

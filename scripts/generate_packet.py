@@ -196,132 +196,131 @@ def main() -> None:
             return text[: args.snippet_chars] + "\n[... truncated ...]"
         return text
 
-    success_examples: List[Example] = []
-    failure_examples: List[Example] = []
-    scanned_queries = 0
+    # Build active query list (one GT per query)
+    active_queries: List[Tuple[str, str, str, int]] = []
+    for q in queries:
+        qid = get_row_id(q)
+        rels = qrels_map[qid]
+        gt_doc_id, gt_score = max(rels.items(), key=lambda kv: kv[1])
+        if gt_doc_id not in corpus_id_to_idx:
+            continue
+        qtext = str(q.get("text", q.get("query", "")))
+        active_queries.append((qid, qtext, gt_doc_id, int(gt_score)))
+
+    if not active_queries:
+        raise RuntimeError("No queries with qrels+corpus match found.")
+
+    # Encode all queries once (MTEB-style): then scan corpus chunks and update running top-k.
+    print(f"Encoding queries: {len(active_queries)}")
+    q_texts = [x[1] for x in active_queries]
+    q_emb_parts: List[np.ndarray] = []
+    for q_batch in tqdm(list(batched(q_texts, args.query_batch_size)), desc="Encoding queries", unit="batch"):
+        q_emb_parts.append(
+            model.encode(
+                q_batch,
+                batch_size=args.query_batch_size,
+                normalize_embeddings=True,
+                convert_to_numpy=True,
+                show_progress_bar=False,
+            ).astype(np.float32)
+        )
+    q_emb = np.vstack(q_emb_parts)
+
+    n_queries = q_emb.shape[0]
+    k = args.top_k
+    best_scores = np.full((n_queries, k), -np.inf, dtype=np.float32)
+    best_indices = np.full((n_queries, k), -1, dtype=np.int64)
 
     started = time.time()
 
-    # Process queries in batches for throughput, but full-corpus retrieval for each query.
-    query_batches = list(batched(queries, args.query_batch_size))
-    p_batches = tqdm(query_batches, desc="Query batches", unit="batch")
-    for query_batch in p_batches:
-        if len(success_examples) >= args.success_target and len(failure_examples) >= args.failure_target:
-            break
-
-        # Skip already-complete condition per-batch
-        active_queries = []
-        for q in query_batch:
-            qid = get_row_id(q)
-            rels = qrels_map[qid]
-            gt_doc_id, gt_score = max(rels.items(), key=lambda kv: kv[1])
-            if gt_doc_id not in corpus_id_to_idx:
-                continue
-            qtext = str(q.get("text", q.get("query", "")))
-            active_queries.append((qid, qtext, gt_doc_id, int(gt_score)))
-
-        if not active_queries:
-            continue
-
-        q_texts = [x[1] for x in active_queries]
-        q_emb = model.encode(
-            q_texts,
-            batch_size=args.query_batch_size,
+    # Encode corpus in chunks ONCE; compute similarities against ALL queries; maintain running top-k per query.
+    n_chunks = math.ceil(len(corpus_fulltext) / args.corpus_chunk_size)
+    p_chunks = tqdm(
+        range(0, len(corpus_fulltext), args.corpus_chunk_size),
+        total=n_chunks,
+        desc="Corpus chunks (encode+score)",
+        unit="chunk",
+    )
+    for c_start in p_chunks:
+        c_end = min(c_start + args.corpus_chunk_size, len(corpus_fulltext))
+        c_texts = corpus_fulltext[c_start:c_end]
+        c_emb = model.encode(
+            c_texts,
+            batch_size=max(8, min(128, args.corpus_chunk_size // 8)),
             normalize_embeddings=True,
             convert_to_numpy=True,
             show_progress_bar=False,
         ).astype(np.float32)
 
-        bsz = q_emb.shape[0]
-        k = args.top_k
-        best_scores = np.full((bsz, k), -np.inf, dtype=np.float32)
-        best_indices = np.full((bsz, k), -1, dtype=np.int64)
+        scores = q_emb @ c_emb.T  # [Q, C]
+        local_idx = np.arange(c_start, c_end, dtype=np.int64)
 
-        # Chunked corpus scan with running top-k merge
-        n_chunks = math.ceil(len(corpus_fulltext) / args.corpus_chunk_size)
-        p_chunks = tqdm(
-            range(0, len(corpus_fulltext), args.corpus_chunk_size),
-            total=n_chunks,
-            desc="Corpus chunks",
-            unit="chunk",
-            leave=False,
-        )
-        for c_start in p_chunks:
-            c_end = min(c_start + args.corpus_chunk_size, len(corpus_fulltext))
-            c_texts = corpus_fulltext[c_start:c_end]
-            c_emb = model.encode(
-                c_texts,
-                batch_size=max(8, min(128, args.corpus_chunk_size // 8)),
-                normalize_embeddings=True,
-                convert_to_numpy=True,
-                show_progress_bar=False,
-            ).astype(np.float32)
+        merged_scores = np.concatenate([best_scores, scores], axis=1)
+        repeated_local = np.broadcast_to(local_idx, (n_queries, local_idx.shape[0]))
+        merged_indices = np.concatenate([best_indices, repeated_local], axis=1)
 
-            scores = q_emb @ c_emb.T  # [B, C]
-            local_idx = np.arange(c_start, c_end, dtype=np.int64)
+        part = np.argpartition(-merged_scores, kth=k - 1, axis=1)[:, :k]
+        rows = np.arange(n_queries)[:, None]
+        picked_scores = merged_scores[rows, part]
+        picked_indices = merged_indices[rows, part]
 
-            # Merge current chunk with running best using partial top-k
-            merged_scores = np.concatenate([best_scores, scores], axis=1)
-            repeated_local = np.broadcast_to(local_idx, (bsz, local_idx.shape[0]))
-            merged_indices = np.concatenate([best_indices, repeated_local], axis=1)
+        order = np.argsort(-picked_scores, axis=1)
+        best_scores = picked_scores[rows, order]
+        best_indices = picked_indices[rows, order]
 
-            part = np.argpartition(-merged_scores, kth=k - 1, axis=1)[:, :k]
-            rows = np.arange(bsz)[:, None]
-            picked_scores = merged_scores[rows, part]
-            picked_indices = merged_indices[rows, part]
+        elapsed = time.time() - started
+        p_chunks.set_postfix(elapsed=f"{elapsed/60:.1f}m")
 
-            order = np.argsort(-picked_scores, axis=1)
-            best_scores = picked_scores[rows, order]
-            best_indices = picked_indices[rows, order]
+    scanned_queries = len(active_queries)
 
-        # Build examples
-        for i, (qid, qtext, gt_doc_id, gt_score) in enumerate(active_queries):
-            scanned_queries += 1
-            top_doc_indices = best_indices[i].tolist()
-            top_scores = best_scores[i].tolist()
-            retrieved: List[RetrievedDoc] = []
+    # Select packet examples AFTER full retrieval (since success depends on full-corpus top-k).
+    success_examples: List[Example] = []
+    failure_examples: List[Example] = []
 
-            for rank, (doc_idx, score) in enumerate(zip(top_doc_indices, top_scores), start=1):
-                if doc_idx < 0:
-                    continue
-                retrieved.append(
-                    RetrievedDoc(
-                        rank=rank,
-                        score=float(score),
-                        doc_id=corpus_ids[doc_idx],
-                        text=clipped(corpus_bodies[doc_idx]),
-                    )
+    shuffled = list(range(len(active_queries)))
+    random.shuffle(shuffled)
+
+    for i in shuffled:
+        if len(success_examples) >= args.success_target and len(failure_examples) >= args.failure_target:
+            break
+
+        qid, qtext, gt_doc_id, gt_score = active_queries[i]
+        top_doc_indices = best_indices[i].tolist()
+        top_scores = best_scores[i].tolist()
+        retrieved: List[RetrievedDoc] = []
+
+        for rank, (doc_idx, score) in enumerate(zip(top_doc_indices, top_scores), start=1):
+            if doc_idx < 0:
+                continue
+            retrieved.append(
+                RetrievedDoc(
+                    rank=rank,
+                    score=float(score),
+                    doc_id=corpus_ids[doc_idx],
+                    text=clipped(corpus_bodies[doc_idx]),
                 )
-
-            success = any(r.doc_id == gt_doc_id for r in retrieved)
-            gt_idx = corpus_id_to_idx[gt_doc_id]
-            example = Example(
-                query_id=qid,
-                query_text=qtext,
-                ground_truth_doc_id=gt_doc_id,
-                ground_truth_score=gt_score,
-                ground_truth_text=clipped(corpus_bodies[gt_idx]),
-                top_k=args.top_k,
-                retrieved=retrieved,
-                success=success,
             )
 
-            if success and len(success_examples) < args.success_target:
-                success_examples.append(example)
-            elif (not success) and len(failure_examples) < args.failure_target:
-                failure_examples.append(example)
-
-            if len(success_examples) >= args.success_target and len(failure_examples) >= args.failure_target:
-                break
-
-        # Progress report
-        elapsed = time.time() - started
-        p_batches.set_postfix(
-            scanned=scanned_queries,
-            success=len(success_examples),
-            fail=len(failure_examples),
-            elapsed=f"{elapsed/60:.1f}m",
+        success = any(r.doc_id == gt_doc_id for r in retrieved)
+        gt_idx = corpus_id_to_idx[gt_doc_id]
+        example = Example(
+            query_id=qid,
+            query_text=qtext,
+            ground_truth_doc_id=gt_doc_id,
+            ground_truth_score=gt_score,
+            ground_truth_text=clipped(corpus_bodies[gt_idx]),
+            top_k=args.top_k,
+            retrieved=retrieved,
+            success=success,
         )
+
+        if success and len(success_examples) < args.success_target:
+            success_examples.append(example)
+        elif (not success) and len(failure_examples) < args.failure_target:
+            failure_examples.append(example)
+
+    print(f"Selected success examples: {len(success_examples)} / {args.success_target}")
+    print(f"Selected failure examples: {len(failure_examples)} / {args.failure_target}")
 
     os.makedirs(os.path.dirname(args.output_path) or ".", exist_ok=True)
     with open(args.output_path, "w", encoding="utf-8") as f:
@@ -342,7 +341,7 @@ def main() -> None:
                 "query_text": "queries['text'] as-is",
                 "similarity": "dot product on L2-normalized embeddings (cosine)",
                 "scope": "full corpus searched for every scanned query (no subsetting)",
-                "memory_strategy": "chunked corpus encoding + running top-k merge",
+                "memory_strategy": "MTEB-style: encode queries once + encode corpus in chunks + running top-k merge",
                 "query_batch_size": args.query_batch_size,
                 "corpus_chunk_size": args.corpus_chunk_size,
                 "max_seq_length": args.max_seq_length,

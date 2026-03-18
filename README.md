@@ -44,7 +44,9 @@ uv pip install -r requirements.txt
 
 ### 3) Optional HF auth for gated model
 
-If using gated/private models (e.g. `BASF-AI/ChEmbed-prog`), set token locally:
+If using gated/private models (e.g. `BASF-AI/ChEmbed-prog`), set token locally.
+
+Note: `generate_packet.py` hard-requires `trust_remote_code=True` for `BASF-AI/ChEmbed-prog`.
 
 ```bash
 cp .env.example .env

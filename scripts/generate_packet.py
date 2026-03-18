@@ -11,14 +11,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
+import time
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
 from datasets import get_dataset_config_names, get_dataset_split_names, load_dataset
 from sentence_transformers import SentenceTransformer
+from tqdm.auto import tqdm
 
 
 @dataclass
@@ -69,6 +72,10 @@ def pick_config(configs: List[str], want: str) -> str:
 
 
 def load_with_split_fallback(dataset: str, config: str, split: str, revision: str | None):
+    """Load dataset config with split fallback.
+
+    Returns (dataset_split, used_split).
+    """
     splits = get_dataset_split_names(dataset, config_name=config, revision=revision)
     use_split = split
     if use_split not in splits:
@@ -76,7 +83,7 @@ def load_with_split_fallback(dataset: str, config: str, split: str, revision: st
             use_split = splits[0]
         else:
             raise ValueError(f"Split '{split}' not in {splits} for config '{config}'")
-    return load_dataset(dataset, config, split=use_split, revision=revision)
+    return load_dataset(dataset, config, split=use_split, revision=revision), use_split
 
 
 def batched(xs: List[Any], n: int):
@@ -101,7 +108,6 @@ def main() -> None:
     ap.add_argument("--max-queries", type=int, default=None, help="Optional cap while searching for targets")
     ap.add_argument("--snippet-chars", type=int, default=1200)
     ap.add_argument("--output-path", required=True)
-    ap.add_argument("--trust-remote-code", action="store_true")
     args = ap.parse_args()
 
     random.seed(args.seed)
@@ -113,9 +119,14 @@ def main() -> None:
     queries_cfg = pick_config(configs, "queries")
     qrels_cfg = pick_config(configs, "qrels")
 
-    corpus_ds = load_with_split_fallback(args.dataset, corpus_cfg, args.split, args.revision)
-    queries_ds = load_with_split_fallback(args.dataset, queries_cfg, args.split, args.revision)
-    qrels_ds = load_with_split_fallback(args.dataset, qrels_cfg, args.split, args.revision)
+    corpus_ds, corpus_split = load_with_split_fallback(args.dataset, corpus_cfg, args.split, args.revision)
+    queries_ds, queries_split = load_with_split_fallback(args.dataset, queries_cfg, args.split, args.revision)
+    qrels_ds, qrels_split = load_with_split_fallback(args.dataset, qrels_cfg, args.split, args.revision)
+
+    print(f"Dataset: {args.dataset} (revision={args.revision})")
+    print(f"Corpus config/split: {corpus_cfg}/{corpus_split} (rows={len(corpus_ds)})")
+    print(f"Queries config/split: {queries_cfg}/{queries_split} (rows={len(queries_ds)})")
+    print(f"Qrels config/split: {qrels_cfg}/{qrels_split} (rows={len(qrels_ds)})")
 
     # qrels map
     qrels_map: Dict[str, Dict[str, int]] = {}
@@ -148,9 +159,10 @@ def main() -> None:
         queries = queries[: args.max_queries]
 
     # Model setup
-    st_kwargs: Dict[str, Any] = {}
-    if args.trust_remote_code:
-        st_kwargs["trust_remote_code"] = True
+    st_kwargs: Dict[str, Any] = {
+        # Required for BASF-AI/ChEmbed-prog (custom HF code)
+        "trust_remote_code": True,
+    }
     if args.device != "auto":
         st_kwargs["device"] = args.device
 
@@ -166,8 +178,12 @@ def main() -> None:
     failure_examples: List[Example] = []
     scanned_queries = 0
 
+    started = time.time()
+
     # Process queries in batches for throughput, but full-corpus retrieval for each query.
-    for query_batch in batched(queries, args.query_batch_size):
+    query_batches = list(batched(queries, args.query_batch_size))
+    p_batches = tqdm(query_batches, desc="Query batches", unit="batch")
+    for query_batch in p_batches:
         if len(success_examples) >= args.success_target and len(failure_examples) >= args.failure_target:
             break
 
@@ -200,7 +216,15 @@ def main() -> None:
         best_indices = np.full((bsz, k), -1, dtype=np.int64)
 
         # Chunked corpus scan with running top-k merge
-        for c_start in range(0, len(corpus_fulltext), args.corpus_chunk_size):
+        n_chunks = math.ceil(len(corpus_fulltext) / args.corpus_chunk_size)
+        p_chunks = tqdm(
+            range(0, len(corpus_fulltext), args.corpus_chunk_size),
+            total=n_chunks,
+            desc="Corpus chunks",
+            unit="chunk",
+            leave=False,
+        )
+        for c_start in p_chunks:
             c_end = min(c_start + args.corpus_chunk_size, len(corpus_fulltext))
             c_texts = corpus_fulltext[c_start:c_end]
             c_emb = model.encode(
@@ -267,6 +291,15 @@ def main() -> None:
 
             if len(success_examples) >= args.success_target and len(failure_examples) >= args.failure_target:
                 break
+
+        # Progress report
+        elapsed = time.time() - started
+        p_batches.set_postfix(
+            scanned=scanned_queries,
+            success=len(success_examples),
+            fail=len(failure_examples),
+            elapsed=f"{elapsed/60:.1f}m",
+        )
 
     os.makedirs(os.path.dirname(args.output_path) or ".", exist_ok=True)
     with open(args.output_path, "w", encoding="utf-8") as f:

@@ -190,9 +190,6 @@ def main() -> None:
     model = SentenceTransformer(args.model_id, **st_kwargs)
     model.max_seq_length = args.max_seq_length
 
-    def clipped(text: str) -> str:
-        # Intentionally NO truncation.
-        return text
 
     # Build active query list (one GT per query)
     active_queries: List[Tuple[str, str, str, int]] = []
@@ -295,7 +292,7 @@ def main() -> None:
                     rank=rank,
                     score=float(score),
                     doc_id=corpus_ids[doc_idx],
-                    text=clipped(corpus_bodies[doc_idx]),
+                    text=corpus_bodies[doc_idx],
                 )
             )
 
@@ -306,7 +303,7 @@ def main() -> None:
             query_text=qtext,
             ground_truth_doc_id=gt_doc_id,
             ground_truth_score=gt_score,
-            ground_truth_text=clipped(corpus_bodies[gt_idx]),
+            ground_truth_text=corpus_bodies[gt_idx],
             top_k=args.top_k,
             retrieved=retrieved,
             success=success,

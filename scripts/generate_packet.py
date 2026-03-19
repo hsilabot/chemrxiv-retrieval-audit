@@ -122,9 +122,6 @@ def main() -> None:
     ap.add_argument("--device", choices=["auto", "mps", "cpu"], default="auto")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--max-queries", type=int, default=None, help="Optional cap while searching for targets")
-    # By default we do NOT truncate any text. (Truncation was causing issues in the UI review flow.)
-    # If you truly need truncation for debugging, pass a positive value explicitly.
-    ap.add_argument("--snippet-chars", type=int, default=0)
     ap.add_argument("--output-path", required=True)
     args = ap.parse_args()
 
@@ -194,9 +191,7 @@ def main() -> None:
     model.max_seq_length = args.max_seq_length
 
     def clipped(text: str) -> str:
-        # Default behavior: NO truncation.
-        if args.snippet_chars and args.snippet_chars > 0 and len(text) > args.snippet_chars:
-            return text[: args.snippet_chars] + "\n[... truncated ...]"
+        # Intentionally NO truncation.
         return text
 
     # Build active query list (one GT per query)

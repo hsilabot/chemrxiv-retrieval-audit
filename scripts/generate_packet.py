@@ -119,7 +119,10 @@ def main() -> None:
     ap.add_argument("--query-batch-size", type=int, default=16)
     ap.add_argument("--corpus-chunk-size", type=int, default=2048)
     ap.add_argument("--max-seq-length", type=int, default=512)
-    ap.add_argument("--device", choices=["auto", "mps", "cpu"], default="auto")
+    # Device string forwarded to SentenceTransformer (PyTorch):
+    # - auto (default): let sentence-transformers pick (CUDA if available, else MPS on Apple, else CPU)
+    # - cpu | mps | cuda | cuda:0 | ...
+    ap.add_argument("--device", default="auto")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--max-queries", type=int, default=None, help="Optional cap while searching for targets")
     ap.add_argument("--output-path", required=True)
